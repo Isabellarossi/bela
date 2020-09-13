@@ -17,6 +17,7 @@
 #include <functiondiscoverykeys.h>
 #include <winstring.h>
 #include <cstring>
+#include <map>
 // #pragma comment(lib,"shlwapi")
 // #pragma comment(lib,"user32")
 
@@ -145,6 +146,21 @@ private:
   DurationEnum duration{DurationEnum::System};
 };
 
+inline std::wstring MakeAppUserModelID(std::wstring_view companyName, std::wstring_view productName,
+                                       std::wstring_view subProduct = L"", std::wstring_view versionInformation = L"") {
+  auto amui = bela::StringCat(companyName, L".", productName);
+  if (!subProduct.empty()) {
+    bela::StrAppend(&amui, L".", subProduct);
+  }
+  if (!versionInformation.empty()) {
+    bela::StrAppend(&amui, L".", versionInformation);
+  }
+  if (amui.size() > SCHAR_MAX) {
+    amui.resize(SCHAR_MAX);
+  }
+  return amui;
+}
+
 class WinToast {
 public:
   WinToast(const WinToast &) = delete;
@@ -163,14 +179,16 @@ public:
   std::wstring &AppName() { return appName; }
   std::wstring_view AppUserModelID() const { return appUserModelID; }
   std::wstring &AppUserModelID() { return appUserModelID; }
-  bool Hide(int64_t id);
+  bool Hide(int64_t id, bela::error_code &ec);
   int64_t Display(const Template &toast, IWinToastHandler *handler, bela::error_code &ec);
+  void Clear();
 
 private:
   bool initialized{false};
   bool coinitialized{false};
   std::wstring appName;
   std::wstring appUserModelID;
+  std::map<INT64, ComPtr<IToastNotification>> buffer{};
   bela::error_code ec;
 };
 } // namespace bela::notice

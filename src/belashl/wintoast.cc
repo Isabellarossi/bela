@@ -95,7 +95,7 @@ class winstring {
 public:
   winstring(_In_reads_(length) PCWSTR stringRef, _In_ UINT32 length) noexcept {
     HRESULT hr = details::WindowsCreateStringReference(stringRef, length, &_header, &_hstring);
-    if (!SUCCEEDED(hr)) {
+    if (FAILED(hr)) {
       RaiseException(static_cast<DWORD>(STATUS_INVALID_PARAMETER), EXCEPTION_NONCONTINUABLE, 0, nullptr);
     }
   }
@@ -343,14 +343,375 @@ bool WinToast::Initialize(bela::error_code &ec) {
   return initialized;
 }
 
-bool WinToast::Hide(int64_t id) {
-  //
-  return false;
+HRESULT SetTextFieldHelper(_In_ IXmlDocument *xml, _In_ std::wstring_view text, _In_ UINT32 pos) {
+  ComPtr<IXmlNodeList> nodeList;
+  HRESULT hr = S_OK;
+  if (hr = xml->GetElementsByTagName(winstring(L"text").Get(), &nodeList); SUCCEEDED(hr)) {
+    ComPtr<IXmlNode> node;
+    if (hr = nodeList->Item(pos, &node); SUCCEEDED(hr)) {
+      hr = setNodeStringValue(text, node.Get(), xml);
+    }
+  }
+  return hr;
+}
+
+//
+// Available as of Windows 10 Anniversary Update
+// Ref: https://docs.microsoft.com/en-us/windows/uwp/design/shell/tiles-and-notifications/adaptive-interactive-toasts
+//
+// NOTE: This will add a new text field, so be aware when iterating over
+//       the toast's text fields or getting a count of them.
+//
+HRESULT SetAttributionTextFieldHelper(IXmlDocument *xml, _In_ const std::wstring_view text) {
+  createElement(xml, L"binding", L"text", {L"placement"});
+  ComPtr<IXmlNodeList> nodeList;
+  HRESULT hr = xml->GetElementsByTagName(winstring(L"text").Get(), &nodeList);
+  if (FAILED(hr)) {
+    return hr;
+  }
+  UINT32 nodeListLength;
+  if (hr = nodeList->get_Length(&nodeListLength); FAILED(hr)) {
+    return hr;
+  }
+  for (UINT32 i = 0; i < nodeListLength; i++) {
+    ComPtr<IXmlNode> textNode;
+    hr = nodeList->Item(i, &textNode);
+    if (SUCCEEDED(hr)) {
+      ComPtr<IXmlNamedNodeMap> attributes;
+      hr = textNode->get_Attributes(&attributes);
+      if (SUCCEEDED(hr)) {
+        ComPtr<IXmlNode> editedNode;
+        if (SUCCEEDED(hr)) {
+          hr = attributes->GetNamedItem(winstring(L"placement").Get(), &editedNode);
+          if (FAILED(hr) || !editedNode) {
+            continue;
+          }
+          hr = setNodeStringValue(L"attribution", editedNode.Get(), xml);
+          if (SUCCEEDED(hr)) {
+            return SetTextFieldHelper(xml, text, i);
+          }
+        }
+      }
+    }
+  }
+  return S_OK;
+}
+
+HRESULT AddDurationHelper(IXmlDocument *xml, std::wstring_view duration) {
+  ComPtr<IXmlNodeList> nodeList;
+  HRESULT hr = xml->GetElementsByTagName(winstring(L"toast").Get(), &nodeList);
+  if (SUCCEEDED(hr)) {
+    UINT32 length;
+    hr = nodeList->get_Length(&length);
+    if (SUCCEEDED(hr)) {
+      ComPtr<IXmlNode> toastNode;
+      hr = nodeList->Item(0, &toastNode);
+      if (SUCCEEDED(hr)) {
+        ComPtr<IXmlElement> toastElement;
+        hr = toastNode.As(&toastElement);
+        if (SUCCEEDED(hr)) {
+          hr = toastElement->SetAttribute(winstring(L"duration").Get(), winstring(duration).Get());
+        }
+      }
+    }
+  }
+  return hr;
+}
+
+HRESULT AddImagePath(IXmlDocument *xml, std::wstring_view path) {
+  auto imagePath = bela::StringCat(L"file:///", path);
+  ComPtr<IXmlNodeList> nodeList;
+  HRESULT hr = xml->GetElementsByTagName(winstring(L"image").Get(), &nodeList);
+  if (FAILED(hr)) {
+    return hr;
+  }
+  ComPtr<IXmlNode> node;
+  if (hr = nodeList->Item(0, &node); FAILED(hr)) {
+    return hr;
+  }
+  ComPtr<IXmlNamedNodeMap> attributes;
+  if (hr = node->get_Attributes(&attributes); FAILED(hr)) {
+    return hr;
+  }
+  ComPtr<IXmlNode> editedNode;
+  if (hr = attributes->GetNamedItem(winstring(L"src").Get(), &editedNode); FAILED(hr)) {
+    return hr;
+  }
+  setNodeStringValue(imagePath, editedNode.Get(), xml);
+  return S_OK;
+}
+
+HRESULT SetAudioFieldHelper(_In_ IXmlDocument *xml, _In_ std::wstring_view path, Template::AudioOptionEnum option) {
+  std::vector<std::wstring> attrs;
+  if (!path.empty()) {
+    attrs.emplace_back(L"src");
+  }
+  if (option == Template::AudioOptionEnum::Loop) {
+    attrs.emplace_back(L"loop");
+  }
+  if (option == Template::AudioOptionEnum::Silent) {
+    attrs.emplace_back(L"silent");
+  }
+  createElement(xml, L"toast", L"audio", attrs);
+
+  ComPtr<IXmlNodeList> nodeList;
+  HRESULT hr = xml->GetElementsByTagName(winstring(L"audio").Get(), &nodeList);
+  if (FAILED(hr)) {
+    return hr;
+  }
+  ComPtr<IXmlNode> node;
+  if (hr = nodeList->Item(0, &node); SUCCEEDED(hr)) {
+    return hr;
+  }
+  ComPtr<IXmlNamedNodeMap> attributes;
+  if (hr = node->get_Attributes(&attributes); FAILED(hr)) {
+    return hr;
+  }
+  ComPtr<IXmlNode> editedNode;
+  if (!path.empty()) {
+    if (SUCCEEDED(hr)) {
+      hr = attributes->GetNamedItem(winstring(L"src").Get(), &editedNode);
+      if (SUCCEEDED(hr)) {
+        hr = setNodeStringValue(path, editedNode.Get(), xml);
+      }
+    }
+  }
+  if (SUCCEEDED(hr)) {
+    switch (option) {
+    case Template::AudioOptionEnum::Loop:
+      hr = attributes->GetNamedItem(winstring(L"loop").Get(), &editedNode);
+      if (SUCCEEDED(hr)) {
+        hr = setNodeStringValue(L"true", editedNode.Get(), xml);
+      }
+      break;
+    case Template::AudioOptionEnum::Silent:
+      hr = attributes->GetNamedItem(winstring(L"silent").Get(), &editedNode);
+      if (SUCCEEDED(hr)) {
+        hr = setNodeStringValue(L"true", editedNode.Get(), xml);
+      }
+    default:
+      break;
+    }
+  }
+  return hr;
+}
+
+HRESULT AddActionHelper(IXmlDocument *xml, std::wstring_view content, std::wstring_view arguments) {
+  ComPtr<IXmlNodeList> nodeList;
+  HRESULT hr = xml->GetElementsByTagName(winstring(L"actions").Get(), &nodeList);
+  if (FAILED(hr)) {
+    return hr;
+  }
+  UINT32 length;
+  if (hr = nodeList->get_Length(&length); FAILED(hr)) {
+    return hr;
+  }
+  ComPtr<IXmlNode> actionsNode;
+  if (length > 0) {
+    hr = nodeList->Item(0, &actionsNode);
+  } else {
+    hr = xml->GetElementsByTagName(winstring(L"toast").Get(), &nodeList);
+    if (SUCCEEDED(hr)) {
+      hr = nodeList->get_Length(&length);
+      if (SUCCEEDED(hr)) {
+        ComPtr<IXmlNode> toastNode;
+        hr = nodeList->Item(0, &toastNode);
+        if (SUCCEEDED(hr)) {
+          ComPtr<IXmlElement> toastElement;
+          hr = toastNode.As(&toastElement);
+          if (SUCCEEDED(hr)) {
+            hr = toastElement->SetAttribute(winstring(L"template").Get(), winstring(L"ToastGeneric").Get());
+          }
+          if (SUCCEEDED(hr)) {
+            hr = toastElement->SetAttribute(winstring(L"duration").Get(), winstring(L"long").Get());
+          }
+          if (SUCCEEDED(hr)) {
+            ComPtr<IXmlElement> actionsElement;
+            hr = xml->CreateElement(winstring(L"actions").Get(), &actionsElement);
+            if (SUCCEEDED(hr)) {
+              hr = actionsElement.As(&actionsNode);
+              if (SUCCEEDED(hr)) {
+                ComPtr<IXmlNode> appendedChild;
+                hr = toastNode->AppendChild(actionsNode.Get(), &appendedChild);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  if (SUCCEEDED(hr)) {
+    ComPtr<IXmlElement> actionElement;
+    hr = xml->CreateElement(winstring(L"action").Get(), &actionElement);
+    if (SUCCEEDED(hr)) {
+      hr = actionElement->SetAttribute(winstring(L"content").Get(), winstring(content).Get());
+    }
+    if (SUCCEEDED(hr)) {
+      hr = actionElement->SetAttribute(winstring(L"arguments").Get(), winstring(arguments).Get());
+    }
+    if (SUCCEEDED(hr)) {
+      ComPtr<IXmlNode> actionNode;
+      hr = actionElement.As(&actionNode);
+      if (SUCCEEDED(hr)) {
+        ComPtr<IXmlNode> appendedChild;
+        hr = actionsNode->AppendChild(actionNode.Get(), &appendedChild);
+      }
+    }
+  }
+  return hr;
 }
 
 int64_t WinToast::Display(const Template &toast, IWinToastHandler *handler, bela::error_code &ec) {
-  //
-  return 0;
+  if (!initialized) {
+    ec = bela::make_error_code(1, L"when launching the toast. WinToast is not initialized.");
+    return -1;
+  }
+  if (handler == nullptr) {
+    ec = bela::make_error_code(1, L"when launching the toast. Handler cannot be nullptr.");
+    return -1;
+  }
+  ComPtr<IToastNotificationManagerStatics> notificationManager;
+  HRESULT hr = details::Wrap_GetActivationFactory(
+      winstring(RuntimeClass_Windows_UI_Notifications_ToastNotificationManager).Get(), &notificationManager);
+  if (FAILED(hr)) {
+    bela::make_system_error_code(L"IToastNotificationManagerStatics ");
+    return -1;
+  }
+  ComPtr<IToastNotifier> notifier;
+  hr = notificationManager->CreateToastNotifierWithId(winstring(appUserModelID).Get(), &notifier);
+  if (FAILED(hr)) {
+    bela::make_system_error_code(L"CreateToastNotifierWithId ");
+    return -1;
+  }
+  ComPtr<IToastNotificationFactory> notificationFactory;
+  hr = details::Wrap_GetActivationFactory(winstring(RuntimeClass_Windows_UI_Notifications_ToastNotification).Get(),
+                                          &notificationFactory);
+  if (FAILED(hr)) {
+    bela::make_system_error_code(L"IToastNotificationFactory ");
+    return -1;
+  }
+  ComPtr<IXmlDocument> xmlDocument;
+  HRESULT hr = notificationManager->GetTemplateContent(ToastTemplateType(toast.Type()), &xmlDocument);
+  if (FAILED(hr)) {
+    bela::make_system_error_code(L"GetTemplateContent ");
+    return -1;
+  }
+  auto fieldcount = static_cast<uint32_t>(toast.Fields().size());
+  for (uint32_t i = 0; i < fieldcount; i++) {
+    hr = SetTextFieldHelper(xmlDocument.Get(), toast.Field(Template::TextField(i)), i);
+    if (FAILED(hr)) {
+      break;
+    }
+  }
+  if (FAILED(hr)) {
+    bela::make_system_error_code(L"SetTextFieldHelper ");
+    return -1;
+  }
+  if (IsSupportingModernFeatures()) {
+    if (!toast.AttributionText().empty()) {
+      hr = SetAttributionTextFieldHelper(xmlDocument.Get(), toast.AttributionText());
+    }
+    auto actionCount = static_cast<uint32_t>(toast.Actions().size());
+    for (uint32_t i = 0; i < actionCount; i++) {
+      hr = AddActionHelper(xmlDocument.Get(), toast.ActionLabel(i), bela::AlphaNum(i).Piece());
+      if (FAILED(hr)) {
+        break;
+      }
+    }
+    if (SUCCEEDED(hr)) {
+      hr = (toast.AudioPath().empty() && toast.AudioOption() == Template::AudioOptionEnum::Default)
+               ? hr
+               : SetAudioFieldHelper(xmlDocument.Get(), toast.AudioPath(), toast.AudioOption());
+    }
+
+    if (SUCCEEDED(hr) && toast.Duration() != Template::DurationEnum::System) {
+      hr = AddDurationHelper(xmlDocument.Get(),
+                             (toast.Duration() == Template::DurationEnum::Short) ? L"short" : L"long");
+    }
+  }
+  hr = toast.HasImage() ? AddImagePath(xmlDocument.Get(), toast.ImagePath()) : hr;
+  if (FAILED(hr)) {
+    ec = bela::make_system_error_code(L"AddImagePath ");
+    return -1;
+  }
+  ComPtr<IToastNotification> notification;
+  hr = notificationFactory->CreateToastNotification(xmlDocument.Get(), &notification);
+  if (FAILED(hr)) {
+    ec = bela::make_system_error_code(L"CreateToastNotification ");
+    return -1;
+  }
+  INT64 expiration = 0, relativeExpiration = toast.Expiration();
+  if (relativeExpiration > 0) {
+    InternalDateTime expirationDateTime(relativeExpiration);
+    expiration = expirationDateTime;
+    if (hr = notification->put_ExpirationTime(&expirationDateTime); FAILED(hr)) {
+      bela::make_system_error_code(L"put_ExpirationTime ");
+      return -1;
+    }
+  }
+  if (hr = setEventHandlers(notification.Get(), std::shared_ptr<IWinToastHandler>(handler), expiration); FAILED(hr)) {
+    ec = bela::make_system_error_code(L"setEventHandlers ");
+    return -1;
+  }
+  GUID guid;
+  if (hr = CoCreateGuid(&guid); FAILED(hr)) {
+    ec = bela::make_system_error_code(L"CoCreateGuid ");
+    return -1;
+  }
+  auto id = guid.Data1;
+  buffer[id] = notification;
+  if (hr = notifier->Show(notification.Get()); FAILED(hr)) {
+    ec = bela::make_system_error_code(L"notifier->Show ");
+    return -1;
+  }
+  return id;
+}
+
+ComPtr<IToastNotifier> notifier(std::wstring_view appUserModelID, bool *succeded) {
+  ComPtr<IToastNotificationManagerStatics> notificationManager;
+  ComPtr<IToastNotifier> notifier;
+  HRESULT hr = details::Wrap_GetActivationFactory(
+      winstring(RuntimeClass_Windows_UI_Notifications_ToastNotificationManager).Get(), &notificationManager);
+  if (SUCCEEDED(hr)) {
+    hr = notificationManager->CreateToastNotifierWithId(winstring(appUserModelID).Get(), &notifier);
+  }
+  *succeded = SUCCEEDED(hr);
+  return notifier;
+}
+bool WinToast::Hide(int64_t id, bela::error_code &ec) {
+  if (!initialized) {
+    ec = bela::make_error_code(1, L"when hiding the toast. WinToast is not initialized.");
+    return false;
+  }
+  if (buffer.find(id) == buffer.end()) {
+    ec = bela::make_error_code(1, L"when hiding the toast. WinToast ID not found.");
+    return false;
+  }
+  auto succeded = false;
+  auto notify = notifier(appUserModelID, &succeded);
+  if (!succeded) {
+    ec = bela::make_error_code(1, L"when hiding the toast. WinToast is not succeded.");
+    return false;
+  }
+  auto result = notify->Hide(buffer[id].Get());
+  buffer.erase(id);
+  if (FAILED(result)) {
+    ec = bela::make_system_error_code(L"WinToast hide ");
+    return false;
+  }
+  return true;
+}
+
+void WinToast::Clear() {
+  auto succeded = false;
+  auto notify = notifier(appUserModelID, &succeded);
+  if (succeded) {
+    auto end = buffer.end();
+    for (auto it = buffer.begin(); it != end; ++it) {
+      notify->Hide(it->second.Get());
+    }
+    buffer.clear();
+  }
 }
 
 } // namespace bela::notice
