@@ -117,7 +117,7 @@ struct color {
 
   constexpr bool operator!=(const bela::color &other) const { return !(*this == other); }
 
-  std::wstring encode(const bool omitAlpha = false) const {
+  std::wstring Encode(const bool omitAlpha = false) const {
     if (omitAlpha) {
       return bela::StringCat(L"#", bela::AlphaNum(bela::Hex(r, bela::kZeroPad2)),
                              bela::AlphaNum(bela::Hex(g, bela::kZeroPad2)),
@@ -127,7 +127,7 @@ struct color {
                            bela::AlphaNum(bela::Hex(r, bela::kZeroPad2)), bela::AlphaNum(bela::Hex(g, bela::kZeroPad2)),
                            bela::AlphaNum(bela::Hex(b, bela::kZeroPad2)));
   }
-  std::string encode_narrow(const bool omitAlpha = false) const {
+  std::string EncodeNarrow(const bool omitAlpha = false) const {
     if (omitAlpha) {
       return bela::narrow::StringCat("#", bela::narrow::AlphaNum(bela::narrow::Hex(r, bela::narrow::kZeroPad2)),
                                      bela::narrow::AlphaNum(bela::narrow::Hex(g, bela::narrow::kZeroPad2)),
@@ -138,7 +138,7 @@ struct color {
                                    bela::narrow::AlphaNum(bela::narrow::Hex(g, bela::narrow::kZeroPad2)),
                                    bela::narrow::AlphaNum(bela::narrow::Hex(b, bela::narrow::kZeroPad2)));
   }
-  static bool decode(std::string_view sr, color &c) {
+  static bool Decode(std::string_view sr, color &c) {
     if (sr.empty() || sr.front() != '#') {
       return false;
     }
@@ -166,7 +166,7 @@ struct color {
     c = color(r, g, b, a);
     return true;
   }
-  static bool decode(std::wstring_view sr, color &c) {
+  static bool Decode(std::wstring_view sr, color &c) {
     if (sr.empty() || sr.front() != L'#') {
       return false;
     }
